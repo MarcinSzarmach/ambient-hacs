@@ -1,5 +1,7 @@
 import logging
 import asyncio
+import json
+import colorsys
 import voluptuous as vol
 from homeassistant.components.light import (
     LightEntity,
@@ -70,6 +72,7 @@ class AmbientLedWebsocket:
     async def _listen(self):
         """Listen for incoming WebSocket messages."""
         try:
+            import websockets
             while self.connected and self.ws:
                 try:
                     message = await asyncio.wait_for(self.ws.recv(), timeout=60)
@@ -93,7 +96,6 @@ class AmbientLedWebsocket:
     async def _handle_message(self, message):
         """Handle incoming WebSocket message."""
         try:
-            import json
             data = json.loads(message)
             
             # Handle device updates
@@ -141,7 +143,6 @@ class AmbientLedWebsocket:
         try:
             await self.ws.send('{"method": "getDevices", "id": "1"}')
             resp = await asyncio.wait_for(self.ws.recv(), timeout=10)
-            import json
             data = json.loads(resp)
             return data.get("data", [])
         except asyncio.TimeoutError:
@@ -158,7 +159,6 @@ class AmbientLedWebsocket:
             return False
         
         try:
-            import json
             msg = {"method": method, "id": device_id, "data": params}
             await asyncio.wait_for(self.ws.send(json.dumps(msg)), timeout=5)
             return True
@@ -211,7 +211,6 @@ class AmbientLedLight(LightEntity):
             color = data.get("color", "#000000")
             if color and color != "#000000":
                 # Convert hex to HS
-                import colorsys
                 color_rgb = tuple(int(color[i:i+2], 16) / 255 for i in (1, 3, 5))
                 self._hs_color = colorsys.rgb_to_hsv(*color_rgb)[:2]
             
@@ -252,7 +251,6 @@ class AmbientLedLight(LightEntity):
             params["brightness"] = kwargs[ATTR_BRIGHTNESS]
         if ATTR_HS_COLOR in kwargs:
             # Convert HS to hex
-            import colorsys
             rgb = colorsys.hsv_to_rgb(kwargs[ATTR_HS_COLOR][0], kwargs[ATTR_HS_COLOR][1], 1)
             hex_color = "#{:02x}{:02x}{:02x}".format(
                 int(rgb[0] * 255), int(rgb[1] * 255), int(rgb[2] * 255)

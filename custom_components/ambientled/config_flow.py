@@ -4,18 +4,20 @@ Config flow for AmbientLed integration.
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.const import CONF_TOKEN
+from homeassistant.core import callback
 from .const import DOMAIN, CONF_URL, DEFAULT_URL
 import logging
 
 _LOGGER = logging.getLogger(__name__)
 
-class AmbientLedConfigFlow(config_entries.ConfigFlow):
+class AmbientLedConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """AmbientLed config flow."""
     VERSION = 1
-    DOMAIN = DOMAIN
 
     async def async_step_user(self, user_input=None):
+        """Handle the initial step."""
         errors = {}
+        
         if user_input is not None:
             # Validate token by testing WebSocket connection
             try:
@@ -42,4 +44,29 @@ class AmbientLedConfigFlow(config_entries.ConfigFlow):
             vol.Required(CONF_TOKEN): str,
             vol.Optional(CONF_URL, default=DEFAULT_URL): str,
         })
-        return self.async_show_form(step_id="user", data_schema=data_schema, errors=errors) 
+        return self.async_show_form(step_id="user", data_schema=data_schema, errors=errors)
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry):
+        """Get the options flow for this handler."""
+        return AmbientLedOptionsFlow(config_entry)
+
+class AmbientLedOptionsFlow(config_entries.OptionsFlow):
+    """AmbientLed options flow."""
+    
+    def __init__(self, config_entry):
+        """Initialize options flow."""
+        self.config_entry = config_entry
+
+    async def async_step_init(self, user_input=None):
+        """Manage the options."""
+        if user_input is not None:
+            return self.async_create_entry(title="", data=user_input)
+
+        return self.async_show_form(
+            step_id="init",
+            data_schema=vol.Schema({
+                vol.Optional(CONF_URL, default=self.config_entry.data.get(CONF_URL, DEFAULT_URL)): str,
+            })
+        ) 

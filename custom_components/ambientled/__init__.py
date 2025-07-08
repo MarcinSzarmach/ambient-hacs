@@ -40,5 +40,9 @@ async def async_unload_entry(hass, entry):
         return unload_ok
     except Exception as e:
         _LOGGER.error(f"Error unloading AmbientLed entry: {e}")
-        return False 
- 
+        return False
+
+async def async_migrate_entry(hass, config_entry):
+    """Migrate old entry."""
+    _LOGGER.info("Migrating from version %s", config_entry.version)
+    return True 
