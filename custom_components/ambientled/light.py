@@ -108,6 +108,11 @@ class AmbientLedWebsocket:
     async def _handle_message(self, message):
         """Handle incoming WebSocket message."""
         try:
+            # Check if message is empty or None
+            if not message or message.strip() == "":
+                _LOGGER.warning("Received empty message from WebSocket")
+                return
+                
             data = json.loads(message)
             
             # Handle device updates
@@ -121,6 +126,8 @@ class AmbientLedWebsocket:
                         except Exception as e:
                             _LOGGER.error(f"Error in message listener: {e}")
                             
+        except json.JSONDecodeError as e:
+            _LOGGER.error(f"Invalid JSON received: {message[:100]}... Error: {e}")
         except Exception as e:
             _LOGGER.error(f"Error handling message: {e}")
 
@@ -155,10 +162,19 @@ class AmbientLedWebsocket:
         try:
             await self.ws.send('{"method": "getDevices", "id": "1"}')
             resp = await asyncio.wait_for(self.ws.recv(), timeout=10)
+            
+            # Check if response is empty
+            if not resp or resp.strip() == "":
+                _LOGGER.error("Empty response from WebSocket")
+                return []
+                
             data = json.loads(resp)
             return data.get("data", [])
         except asyncio.TimeoutError:
             _LOGGER.error("Timeout getting devices")
+            return []
+        except json.JSONDecodeError as e:
+            _LOGGER.error(f"Invalid JSON response: {resp[:100]}... Error: {e}")
             return []
         except Exception as e:
             _LOGGER.error(f"Error getting devices: {e}")
