@@ -25,6 +25,7 @@ class AmbientLedConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 ws = AmbientLedWebsocket(user_input[CONF_TOKEN], user_input.get(CONF_URL, DEFAULT_URL), self.hass)
                 await ws.connect()
                 
+                # Check if connection was successful
                 if not ws.connected:
                     errors["base"] = "cannot_connect"
                 else:
@@ -38,6 +39,8 @@ class AmbientLedConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         
             except Exception as e:
                 _LOGGER.error(f"Config flow error: {e}")
+                _LOGGER.error(f"Error type: {type(e).__name__}")
+                _LOGGER.error(f"Error message: {str(e)}")
                 error_message = str(e)
                 if "Authentication failed" in error_message:
                     errors["base"] = "invalid_token"
@@ -47,6 +50,16 @@ class AmbientLedConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     errors["base"] = "invalid_url"
                 elif "Server error" in error_message:
                     errors["base"] = "server_error"
+                elif "Connection failed" in error_message:
+                    # Try to extract more specific error from the message
+                    if "401" in error_message:
+                        errors["base"] = "invalid_token"
+                    elif "timeout" in error_message.lower():
+                        errors["base"] = "timeout"
+                    elif "url" in error_message.lower():
+                        errors["base"] = "invalid_url"
+                    else:
+                        errors["base"] = "cannot_connect"
                 else:
                     errors["base"] = "unknown"
 
@@ -65,19 +78,19 @@ class AmbientLedConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         # Add helpful error messages
         if errors:
             if errors["base"] == "cannot_connect":
-                errors["base"] = "Unable to connect to AmbientLed backend. Please check your token and URL."
+                errors["base"] = "Unable to connect to AmbientLed backend. Please check your token and URL. Make sure your AmbientLed server is running and accessible."
             elif errors["base"] == "invalid_token":
                 errors["base"] = "Invalid token. Please check your AmbientLed user token in the dashboard settings."
             elif errors["base"] == "timeout":
-                errors["base"] = "Connection timeout. Please check if your AmbientLed server is running and accessible."
+                errors["base"] = "Connection timeout. Please check if your AmbientLed server is running and accessible. The server might be down or the URL might be incorrect."
             elif errors["base"] == "invalid_url":
-                errors["base"] = "Invalid WebSocket URL. Please check the URL format (should start with ws:// or wss://)."
+                errors["base"] = "Invalid WebSocket URL. Please check the URL format (should start with ws:// or wss://). Example: ws://localhost:3000"
             elif errors["base"] == "server_error":
-                errors["base"] = "Server error. Please check if your AmbientLed backend is running properly."
+                errors["base"] = "Server error. Please check if your AmbientLed backend is running properly and the WebSocket endpoint is available."
             elif errors["base"] == "no_devices":
-                errors["base"] = "No devices found. Please make sure you have at least one AmbientLed device configured and connected."
+                errors["base"] = "No devices found. Please make sure you have at least one AmbientLed device configured and connected to your backend."
             elif errors["base"] == "unknown":
-                errors["base"] = "An unexpected error occurred. Please check your configuration and try again."
+                errors["base"] = "An unexpected error occurred. Please check your configuration and try again. If the problem persists, check the Home Assistant logs for more details."
         
         return self.async_show_form(step_id="user", data_schema=data_schema, errors=errors)
 
