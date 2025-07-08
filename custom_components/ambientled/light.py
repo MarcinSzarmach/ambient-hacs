@@ -102,6 +102,8 @@ class AmbientLedWebsocket:
         self.reconnect_delay = 5
         self._listeners = []
         self._recv_lock = asyncio.Lock()
+        self._pending_responses = {}
+        self._message_id = 0
 
     async def connect(self):
         """Connect to WebSocket with error handling and reconnection."""
@@ -159,7 +161,10 @@ class AmbientLedWebsocket:
                     # Use lock to prevent concurrent recv calls
                     async with self._recv_lock:
                         message = await asyncio.wait_for(self.ws.recv(), timeout=60)
+                    
+                    # Handle the message
                     await self._handle_message(message)
+                    
                 except asyncio.TimeoutError:
                     # Send ping to keep connection alive
                     if self.ws and self.connected:
@@ -198,20 +203,28 @@ class AmbientLedWebsocket:
             except json.JSONDecodeError as e:
                 # Only log if it's not a ping/pong message
                 if not message_text.startswith("ping") and not message_text.startswith("pong"):
-                    _LOGGER.debug(f"Non-JSON message received (likely ping/pong): {message[:50]}")
+                    _LOGGER.warning(f"Invalid JSON message: {message[:100]}... Error: {e}")
                 return
             
-            # Handle device updates
-            if data.get("method") == "getDevice" and data.get("status"):
-                device_data = data.get("data")
-                if device_data:
-                    # Notify listeners about device update
-                    for listener in self._listeners:
-                        try:
-                            await listener(device_data)
-                        except Exception as e:
-                            _LOGGER.error(f"Error in message listener: {e}")
-                            
+            # Check if this is a response to a pending request
+            if "id" in data:
+                message_id = data.get("id")
+                if message_id in self._pending_responses:
+                    # Resolve the pending response
+                    future = self._pending_responses.pop(message_id)
+                    if not future.done():
+                        future.set_result(data)
+                    return
+            
+            # Handle device updates for listeners
+            if data.get("method") == "getDevice" and "data" in data:
+                device_data = data["data"]
+                for listener in self._listeners:
+                    try:
+                        await listener(device_data)
+                    except Exception as e:
+                        _LOGGER.error(f"Error in message listener: {e}")
+                        
         except Exception as e:
             _LOGGER.error(f"Error handling message: {e}")
 
@@ -219,21 +232,20 @@ class AmbientLedWebsocket:
         """Schedule reconnection attempt."""
         if self.reconnect_task:
             self.reconnect_task.cancel()
-        
         self.reconnect_task = asyncio.create_task(self._reconnect())
 
     async def _reconnect(self):
-        """Attempt to reconnect with exponential backoff."""
-        for attempt in range(self.max_reconnect_attempts):
+        """Attempt to reconnect to WebSocket."""
+        for attempt in range(1, self.max_reconnect_attempts + 1):
             try:
-                await asyncio.sleep(self.reconnect_delay * (2 ** attempt))
-                _LOGGER.info(f"Attempting to reconnect (attempt {attempt + 1}/{self.max_reconnect_attempts})")
+                _LOGGER.info(f"Attempting to reconnect (attempt {attempt}/{self.max_reconnect_attempts})")
                 await self.connect()
-                if self.connected:
-                    _LOGGER.info("Successfully reconnected to AmbientLed WebSocket")
-                    return
+                _LOGGER.info("Successfully reconnected to AmbientLed WebSocket")
+                return
             except Exception as e:
-                _LOGGER.error(f"Reconnection attempt {attempt + 1} failed: {e}")
+                _LOGGER.error(f"Reconnection attempt {attempt} failed: {e}")
+                if attempt < self.max_reconnect_attempts:
+                    await asyncio.sleep(self.reconnect_delay)
         
         _LOGGER.error("Failed to reconnect after all attempts")
 
@@ -244,40 +256,42 @@ class AmbientLedWebsocket:
             return []
         
         try:
+            # Generate unique message ID
+            self._message_id += 1
+            message_id = str(self._message_id)
+            
+            # Create future for this request
+            future = asyncio.Future()
+            self._pending_responses[message_id] = future
+            
             # Send message in the correct format expected by the backend
             # Use getDevicesIntegration for Home Assistant to get only light devices
             message = {
                 "method": "getDevicesIntegration",
-                "id": "1",
+                "id": message_id,
                 "data": {}
             }
             await self.ws.send(json.dumps(message))
             
-            # Use lock to prevent concurrent recv calls
-            async with self._recv_lock:
-                resp = await asyncio.wait_for(self.ws.recv(), timeout=10)
-            
-            _LOGGER.info(f"Response: {resp}")
-            # Check if response is empty
-            if not resp or resp.strip() == "":
-                _LOGGER.error("Empty response from WebSocket")
-                return []
-            
-            # Try to parse JSON response
+            # Wait for response with timeout
             try:
-                data = json.loads(resp)
-            except json.JSONDecodeError as e:
-                _LOGGER.error(f"Invalid JSON response: {resp[:100]}... Error: {e}")
+                response = await asyncio.wait_for(future, timeout=10)
+            except asyncio.TimeoutError:
+                # Remove from pending responses
+                self._pending_responses.pop(message_id, None)
+                _LOGGER.error("Timeout getting devices")
                 return []
+            
+            _LOGGER.info(f"Response: {json.dumps(response)}")
             
             # Check if response indicates an error
-            if not data.get("status", True):
-                error_msg = data.get("data", {}).get("error", "Unknown error")
+            if not response.get("status", True):
+                error_msg = response.get("data", {}).get("error", "Unknown error")
                 _LOGGER.error(f"Server returned error: {error_msg}")
                 return []
             
             # Check if data field exists and is a list
-            devices = data.get("data", [])
+            devices = response.get("data", [])
             if not isinstance(devices, list):
                 _LOGGER.error(f"Expected devices list, got: {type(devices)}")
                 return []
@@ -285,9 +299,6 @@ class AmbientLedWebsocket:
             _LOGGER.info(f"Successfully retrieved {len(devices)} devices")
             return devices
             
-        except asyncio.TimeoutError:
-            _LOGGER.error("Timeout getting devices")
-            return []
         except Exception as e:
             _LOGGER.error(f"Error getting devices: {e}")
             return []
@@ -299,7 +310,11 @@ class AmbientLedWebsocket:
             return False
         
         try:
-            msg = {"method": method, "id": device_id, "data": params}
+            # Generate unique message ID
+            self._message_id += 1
+            message_id = str(self._message_id)
+            
+            msg = {"method": method, "id": message_id, "data": params}
             await asyncio.wait_for(self.ws.send(json.dumps(msg)), timeout=5)
             return True
         except asyncio.TimeoutError:
@@ -438,7 +453,8 @@ class AmbientLedLight(LightEntity):
 
     async def async_turn_off(self, **kwargs):
         """Turn off the light with error handling."""
-        success = await self._ws.send_command(self._unique_id, "updateParams", {"lighting": False})
+        params = {"lighting": False}
+        success = await self._ws.send_command(self._unique_id, "updateParams", params)
         if success:
             self._is_on = False
             self.async_write_ha_state()
@@ -446,8 +462,8 @@ class AmbientLedLight(LightEntity):
             _LOGGER.error(f"Failed to turn off light {self._name}")
 
     async def async_update(self):
-        """Update light state."""
-        # This will be handled by WebSocket updates
+        """Update the light state."""
+        # The state is updated via WebSocket messages, so no manual update needed
         pass
 
     async def async_will_remove_from_hass(self):
