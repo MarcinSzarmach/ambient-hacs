@@ -4,6 +4,7 @@ import json
 import colorsys
 import websockets
 import voluptuous as vol
+import certifi
 from homeassistant.components.light import (
     LightEntity,
     ATTR_BRIGHTNESS,
@@ -24,16 +25,34 @@ async def async_setup_entry(hass, entry, async_add_entities):
     token = entry.data[CONF_TOKEN]
     url = entry.data.get(CONF_URL, DEFAULT_URL)
     ws = AmbientLedWebsocket(token, url, hass)
-    await ws.connect()
-    devices = await ws.get_devices()
-    entities = []
-    for dev in devices:
-        # Check if device is a dictionary
-        if isinstance(dev, dict):
-            entities.append(AmbientLedLight(dev, ws))
+    
+    try:
+        await ws.connect()
+        devices = await ws.get_devices()
+        entities = []
+        
+        if not devices:
+            _LOGGER.warning("No devices found or failed to get devices")
+            return
+            
+        for dev in devices:
+            # Check if device is a dictionary and has required fields
+            if isinstance(dev, dict) and dev.get("_id") and dev.get("name"):
+                try:
+                    entities.append(AmbientLedLight(dev, ws))
+                except Exception as e:
+                    _LOGGER.error(f"Failed to create entity for device {dev.get('name', 'unknown')}: {e}")
+            else:
+                _LOGGER.warning(f"Invalid device data: {dev}")
+        
+        if entities:
+            async_add_entities(entities)
         else:
-            _LOGGER.warning(f"Device is not a dictionary: {dev}")
-    async_add_entities(entities)
+            _LOGGER.warning("No valid devices found to create entities")
+            
+    except Exception as e:
+        _LOGGER.error(f"Failed to setup AmbientLed integration: {e}")
+        # Don't raise the exception to prevent integration from failing completely
 
 class AmbientLedWebsocket:
     def __init__(self, token, url, hass):
@@ -51,8 +70,10 @@ class AmbientLedWebsocket:
         """Connect to WebSocket with error handling and reconnection."""
         try:
             import ssl
-            # Create SSL context in async way
-            ssl_context = ssl.create_default_context()
+            import certifi
+            
+            # Create SSL context in async way to avoid blocking calls
+            ssl_context = ssl.create_default_context(cafile=certifi.where())
             
             self.ws = await asyncio.wait_for(
                 websockets.connect(
@@ -99,8 +120,12 @@ class AmbientLedWebsocket:
                     await self._handle_message(message)
                 except asyncio.TimeoutError:
                     # Send ping to keep connection alive
-                    if self.ws:
-                        await self.ws.ping()
+                    if self.ws and self.connected:
+                        try:
+                            await self.ws.ping()
+                        except Exception as e:
+                            _LOGGER.warning(f"Failed to send ping: {e}")
+                            break
                 except websockets.exceptions.ConnectionClosed:
                     _LOGGER.warning("WebSocket connection closed")
                     break
@@ -118,14 +143,21 @@ class AmbientLedWebsocket:
         try:
             # Check if message is empty or None
             if not message or message.strip() == "":
-                _LOGGER.warning("Received empty message from WebSocket")
                 return
                 
-            # Ignore ping/pong messages
-            if message.strip() == "pong":
+            # Ignore ping/pong messages (both "pong" and "ping")
+            message_text = message.strip().lower()
+            if message_text in ["pong", "ping"]:
                 return
                 
-            data = json.loads(message)
+            # Try to parse JSON
+            try:
+                data = json.loads(message)
+            except json.JSONDecodeError as e:
+                # Only log if it's not a ping/pong message
+                if not message_text.startswith("ping") and not message_text.startswith("pong"):
+                    _LOGGER.debug(f"Non-JSON message received (likely ping/pong): {message[:50]}")
+                return
             
             # Handle device updates
             if data.get("method") == "getDevice" and data.get("status"):
@@ -138,8 +170,6 @@ class AmbientLedWebsocket:
                         except Exception as e:
                             _LOGGER.error(f"Error in message listener: {e}")
                             
-        except json.JSONDecodeError as e:
-            _LOGGER.error(f"Invalid JSON received: {message[:100]}... Error: {e}")
         except Exception as e:
             _LOGGER.error(f"Error handling message: {e}")
 
