@@ -410,10 +410,16 @@ class AmbientLedLight(LightEntity):
         self._supported_color_modes = {ColorMode.HS}
         self._available = True
         
-        # Available effects for this device - ensure we have a proper list
+        # Available effects for this device - handle both string and array formats
         effects = device_data.get("effects", [])
         if isinstance(effects, list) and effects:
             self._effects = effects
+        elif isinstance(effects, str):
+            # If effects is a string, try to parse it as a comma-separated list
+            try:
+                self._effects = [effect.strip() for effect in effects.split(",") if effect.strip()]
+            except:
+                self._effects = ["Fade", "Fire", "Rain", "Rainbow", "Rainbow vertical", "Firework", "Romantic", "Disco"]
         else:
             # Fallback effects if none provided
             self._effects = ["Fade", "Fire", "Rain", "Rainbow", "Rainbow vertical", "Firework", "Romantic", "Disco"]
@@ -465,9 +471,17 @@ class AmbientLedLight(LightEntity):
                         _LOGGER.warning(f"Invalid color format: {color}")
             
             # Update effects list if provided
-            if "effects" in data and isinstance(data["effects"], list):
-                self._effects = data["effects"]
-                _LOGGER.info(f"Updated effects list: {self._effects}")
+            if "effects" in data:
+                effects = data["effects"]
+                if isinstance(effects, list) and effects:
+                    self._effects = effects
+                    _LOGGER.info(f"Updated effects list: {self._effects}")
+                elif isinstance(effects, str):
+                    try:
+                        self._effects = [effect.strip() for effect in effects.split(",") if effect.strip()]
+                        _LOGGER.info(f"Updated effects list from string: {self._effects}")
+                    except:
+                        _LOGGER.warning(f"Could not parse effects string: {effects}")
             
             # Check if state actually changed
             new_state = {
@@ -479,6 +493,7 @@ class AmbientLedLight(LightEntity):
             
             if old_state != new_state:
                 _LOGGER.info(f"State changed for {self._name}: {old_state} -> {new_state}")
+                # Force state update
                 self.async_write_ha_state()
             else:
                 _LOGGER.debug(f"No state change for {self._name}")
