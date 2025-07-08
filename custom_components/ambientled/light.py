@@ -50,9 +50,7 @@ class AmbientLedWebsocket:
             self.ws = await asyncio.wait_for(
                 websockets.connect(
                     self.url, 
-                    extra_headers={"Authorization": f"Bearer {self.token}"},
-                    ping_interval=30,
-                    ping_timeout=10
+                    additional_headers={"Authorization": f"Bearer {self.token}"}
                 ),
                 timeout=10
             )
