@@ -393,7 +393,11 @@ class AmbientLedLight(LightEntity):
         # Initialize state from device data
         device_data = device.get("data", {})
         self._is_on = device_data.get("lighting", False)
-        self._brightness = device_data.get("brightness", 255)
+        
+        # Convert device brightness (0-100) to Home Assistant brightness (0-255)
+        device_brightness = device_data.get("brightness", 0)
+        self._brightness = int((device_brightness / 100) * 255)
+        
         self._effect = device_data.get("effect", "Fade")
         
         # Convert color from hex to HS
@@ -425,7 +429,7 @@ class AmbientLedLight(LightEntity):
             self._effects = ["Fade", "Fire", "Rain", "Rainbow", "Rainbow vertical", "Firework", "Romantic", "Disco"]
         
         _LOGGER.info(f"Created light entity: {self._name} (ID: {self._unique_id})")
-        _LOGGER.info(f"Initial state - On: {self._is_on}, Brightness: {self._brightness}, Effect: {self._effect}")
+        _LOGGER.info(f"Initial state - On: {self._is_on}, Brightness: {self._brightness} (from device: {device_brightness}), Effect: {self._effect}")
         _LOGGER.info(f"Available effects: {self._effects}")
         
         # Add listener for device updates
@@ -449,10 +453,12 @@ class AmbientLedLight(LightEntity):
                 self._is_on = data.get("lighting", self._is_on)
                 _LOGGER.info(f"Updated lighting state: {self._is_on}")
             
-            # Update brightness
+            # Update brightness - convert device brightness (0-100) to Home Assistant brightness (0-255)
             if "brightness" in data:
-                self._brightness = data.get("brightness", self._brightness)
-                _LOGGER.info(f"Updated brightness: {self._brightness}")
+                device_brightness = data.get("brightness", 0)
+                ha_brightness = int((device_brightness / 100) * 255)
+                self._brightness = ha_brightness
+                _LOGGER.info(f"Updated brightness: Device {device_brightness} -> HA {ha_brightness}")
             
             # Update effect
             if "effect" in data:
@@ -548,8 +554,11 @@ class AmbientLedLight(LightEntity):
         
         params = {}
         if ATTR_BRIGHTNESS in kwargs:
-            params["brightness"] = kwargs[ATTR_BRIGHTNESS]
-            _LOGGER.info(f"Setting brightness to: {kwargs[ATTR_BRIGHTNESS]}")
+            # Convert Home Assistant brightness (0-255) to device brightness (0-100)
+            ha_brightness = kwargs[ATTR_BRIGHTNESS]
+            device_brightness = int((ha_brightness / 255) * 100)
+            params["brightness"] = device_brightness
+            _LOGGER.info(f"Converting brightness: HA {ha_brightness} -> Device {device_brightness}")
         if ATTR_HS_COLOR in kwargs:
             # Convert HS to hex
             rgb = colorsys.hsv_to_rgb(kwargs[ATTR_HS_COLOR][0], kwargs[ATTR_HS_COLOR][1], 1)
@@ -568,7 +577,8 @@ class AmbientLedLight(LightEntity):
         if success:
             self._is_on = True
             if "brightness" in params:
-                self._brightness = params["brightness"]
+                # Store the Home Assistant brightness value, not the device value
+                self._brightness = kwargs.get(ATTR_BRIGHTNESS, self._brightness)
             if "color" in params:
                 self._hs_color = kwargs.get(ATTR_HS_COLOR, self._hs_color)
             if "effect" in params:
