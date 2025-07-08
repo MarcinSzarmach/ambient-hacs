@@ -162,6 +162,9 @@ class AmbientLedWebsocket:
                     async with self._recv_lock:
                         message = await asyncio.wait_for(self.ws.recv(), timeout=60)
                     
+                    # Log every message received
+                    _LOGGER.info(f"WebSocket message received: {message}")
+                    
                     # Handle the message
                     await self._handle_message(message)
                     
@@ -170,6 +173,7 @@ class AmbientLedWebsocket:
                     if self.ws and self.connected:
                         try:
                             await self.ws.ping()
+                            _LOGGER.debug("Sent ping to keep connection alive")
                         except Exception as e:
                             _LOGGER.warning(f"Failed to send ping: {e}")
                             break
@@ -190,16 +194,19 @@ class AmbientLedWebsocket:
         try:
             # Check if message is empty or None
             if not message or message.strip() == "":
+                _LOGGER.debug("Received empty message")
                 return
                 
             # Ignore ping/pong messages (both "pong" and "ping")
             message_text = message.strip().lower()
             if message_text in ["pong", "ping"]:
+                _LOGGER.debug(f"Ignoring ping/pong message: {message_text}")
                 return
                 
             # Try to parse JSON
             try:
                 data = json.loads(message)
+                _LOGGER.info(f"Parsed WebSocket message: {json.dumps(data, indent=2)}")
             except json.JSONDecodeError as e:
                 # Only log if it's not a ping/pong message
                 if not message_text.startswith("ping") and not message_text.startswith("pong"):
@@ -210,20 +217,53 @@ class AmbientLedWebsocket:
             if "id" in data:
                 message_id = data.get("id")
                 if message_id in self._pending_responses:
+                    _LOGGER.info(f"Resolving pending response for message ID: {message_id}")
                     # Resolve the pending response
                     future = self._pending_responses.pop(message_id)
                     if not future.done():
                         future.set_result(data)
                     return
             
-            # Handle device updates for listeners
-            if data.get("method") == "getDevice" and "data" in data:
+            # Handle device updates for listeners - check multiple possible methods
+            device_data = None
+            method = data.get("method", "")
+            
+            # Check for device updates in various message formats
+            if method == "getDevice" and "data" in data:
                 device_data = data["data"]
+                _LOGGER.info(f"Device update via getDevice: {device_data.get('name', 'unknown')}")
+            elif method == "getDevices" and "data" in data:
+                # Handle array of devices
+                devices = data["data"]
+                if isinstance(devices, list):
+                    for device in devices:
+                        if isinstance(device, dict):
+                            _LOGGER.info(f"Device update via getDevices: {device.get('name', 'unknown')}")
+                            for listener in self._listeners:
+                                try:
+                                    await listener(device)
+                                except Exception as e:
+                                    _LOGGER.error(f"Error in message listener: {e}")
+                    return
+            elif method == "updateParams" and "data" in data:
+                # This might be a response to our updateParams command
+                _LOGGER.info(f"UpdateParams response received: {data}")
+                return
+            elif "data" in data and isinstance(data["data"], dict):
+                # Generic device data update
+                device_data = data["data"]
+                _LOGGER.info(f"Generic device update: {device_data.get('name', 'unknown')}")
+            
+            # If we have device data, notify listeners
+            if device_data and isinstance(device_data, dict):
+                _LOGGER.info(f"Notifying listeners of device update: {device_data.get('name', 'unknown')} - ID: {device_data.get('_id', 'unknown')}")
                 for listener in self._listeners:
                     try:
                         await listener(device_data)
                     except Exception as e:
                         _LOGGER.error(f"Error in message listener: {e}")
+            else:
+                _LOGGER.info(f"Unhandled message method: {method}")
                         
         except Exception as e:
             _LOGGER.error(f"Error handling message: {e}")
@@ -271,6 +311,7 @@ class AmbientLedWebsocket:
                 "id": message_id,
                 "data": {}
             }
+            _LOGGER.info(f"Sending getDevicesIntegration request: {json.dumps(message)}")
             await self.ws.send(json.dumps(message))
             
             # Wait for response with timeout
@@ -315,6 +356,7 @@ class AmbientLedWebsocket:
             message_id = str(self._message_id)
             
             msg = {"method": method, "id": message_id, "data": params}
+            _LOGGER.info(f"Sending command: {json.dumps(msg)}")
             await asyncio.wait_for(self.ws.send(json.dumps(msg)), timeout=5)
             return True
         except asyncio.TimeoutError:
@@ -347,15 +389,38 @@ class AmbientLedLight(LightEntity):
         self._ws = ws
         self._name = device.get("name", "AmbientLed")
         self._unique_id = device.get("_id")
-        self._is_on = device.get("data", {}).get("lighting", False)
-        self._brightness = device.get("data", {}).get("brightness", 255)
-        self._hs_color = (0, 0)
-        self._effect = device.get("data", {}).get("effect", "Fade")
+        
+        # Initialize state from device data
+        device_data = device.get("data", {})
+        self._is_on = device_data.get("lighting", False)
+        self._brightness = device_data.get("brightness", 255)
+        self._effect = device_data.get("effect", "Fade")
+        
+        # Convert color from hex to HS
+        color = device_data.get("color", "#ffffff")
+        if color and color.startswith("#"):
+            try:
+                color_rgb = tuple(int(color[i:i+2], 16) / 255 for i in (1, 3, 5))
+                self._hs_color = colorsys.rgb_to_hsv(*color_rgb)[:2]
+            except (ValueError, IndexError):
+                self._hs_color = (0, 0)
+        else:
+            self._hs_color = (0, 0)
+        
         self._supported_color_modes = {ColorMode.HS}
         self._available = True
         
-        # Available effects for this device
-        self._effects = device.get("data", {}).get("effects", ["Fade", "Fire", "Rain", "Rainbow", "Rainbow vertical", "Firework", "Romantic", "Disco"])
+        # Available effects for this device - ensure we have a proper list
+        effects = device_data.get("effects", [])
+        if isinstance(effects, list) and effects:
+            self._effects = effects
+        else:
+            # Fallback effects if none provided
+            self._effects = ["Fade", "Fire", "Rain", "Rainbow", "Rainbow vertical", "Firework", "Romantic", "Disco"]
+        
+        _LOGGER.info(f"Created light entity: {self._name} (ID: {self._unique_id})")
+        _LOGGER.info(f"Initial state - On: {self._is_on}, Brightness: {self._brightness}, Effect: {self._effect}")
+        _LOGGER.info(f"Available effects: {self._effects}")
         
         # Add listener for device updates
         self._ws.add_listener(self._handle_device_update)
@@ -363,20 +428,60 @@ class AmbientLedLight(LightEntity):
     async def _handle_device_update(self, device_data):
         """Handle device state updates from WebSocket."""
         if device_data.get("_id") == self._unique_id:
+            _LOGGER.info(f"Received device update for {self._name}: {json.dumps(device_data, indent=2)}")
+            
             data = device_data.get("data", {})
-            self._is_on = data.get("lighting", self._is_on)
-            self._brightness = data.get("brightness", self._brightness)
-            # Update effect if available
+            old_state = {
+                "is_on": self._is_on,
+                "brightness": self._brightness,
+                "effect": self._effect,
+                "hs_color": self._hs_color
+            }
+            
+            # Update lighting state
+            if "lighting" in data:
+                self._is_on = data.get("lighting", self._is_on)
+                _LOGGER.info(f"Updated lighting state: {self._is_on}")
+            
+            # Update brightness
+            if "brightness" in data:
+                self._brightness = data.get("brightness", self._brightness)
+                _LOGGER.info(f"Updated brightness: {self._brightness}")
+            
+            # Update effect
             if "effect" in data:
                 self._effect = data.get("effect", self._effect)
-            # Update color if available
-            color = data.get("color", "#000000")
-            if color and color != "#000000":
-                # Convert hex to HS
-                color_rgb = tuple(int(color[i:i+2], 16) / 255 for i in (1, 3, 5))
-                self._hs_color = colorsys.rgb_to_hsv(*color_rgb)[:2]
+                _LOGGER.info(f"Updated effect: {self._effect}")
             
-            self.async_write_ha_state()
+            # Update color
+            if "color" in data:
+                color = data.get("color", "#ffffff")
+                if color and color.startswith("#"):
+                    try:
+                        color_rgb = tuple(int(color[i:i+2], 16) / 255 for i in (1, 3, 5))
+                        self._hs_color = colorsys.rgb_to_hsv(*color_rgb)[:2]
+                        _LOGGER.info(f"Updated color: {color} -> HS: {self._hs_color}")
+                    except (ValueError, IndexError):
+                        _LOGGER.warning(f"Invalid color format: {color}")
+            
+            # Update effects list if provided
+            if "effects" in data and isinstance(data["effects"], list):
+                self._effects = data["effects"]
+                _LOGGER.info(f"Updated effects list: {self._effects}")
+            
+            # Check if state actually changed
+            new_state = {
+                "is_on": self._is_on,
+                "brightness": self._brightness,
+                "effect": self._effect,
+                "hs_color": self._hs_color
+            }
+            
+            if old_state != new_state:
+                _LOGGER.info(f"State changed for {self._name}: {old_state} -> {new_state}")
+                self.async_write_ha_state()
+            else:
+                _LOGGER.debug(f"No state change for {self._name}")
 
     @property
     def name(self):
@@ -410,6 +515,7 @@ class AmbientLedLight(LightEntity):
     @property
     def effect_list(self):
         """Return the list of supported effects."""
+        _LOGGER.debug(f"Effect list for {self._name}: {self._effects}")
         return self._effects
 
     @property
@@ -423,9 +529,12 @@ class AmbientLedLight(LightEntity):
 
     async def async_turn_on(self, **kwargs):
         """Turn on the light with error handling."""
+        _LOGGER.info(f"Turning on {self._name} with kwargs: {kwargs}")
+        
         params = {}
         if ATTR_BRIGHTNESS in kwargs:
             params["brightness"] = kwargs[ATTR_BRIGHTNESS]
+            _LOGGER.info(f"Setting brightness to: {kwargs[ATTR_BRIGHTNESS]}")
         if ATTR_HS_COLOR in kwargs:
             # Convert HS to hex
             rgb = colorsys.hsv_to_rgb(kwargs[ATTR_HS_COLOR][0], kwargs[ATTR_HS_COLOR][1], 1)
@@ -433,8 +542,10 @@ class AmbientLedLight(LightEntity):
                 int(rgb[0] * 255), int(rgb[1] * 255), int(rgb[2] * 255)
             )
             params["color"] = hex_color
+            _LOGGER.info(f"Setting color to: {hex_color} (HS: {kwargs[ATTR_HS_COLOR]})")
         if ATTR_EFFECT in kwargs:
             params["effect"] = kwargs[ATTR_EFFECT]
+            _LOGGER.info(f"Setting effect to: {kwargs[ATTR_EFFECT]}")
         params["lighting"] = True
         
         # Use updateParams method for Home Assistant integration
@@ -447,16 +558,19 @@ class AmbientLedLight(LightEntity):
                 self._hs_color = kwargs.get(ATTR_HS_COLOR, self._hs_color)
             if "effect" in params:
                 self._effect = params["effect"]
+            _LOGGER.info(f"Successfully turned on {self._name}")
             self.async_write_ha_state()
         else:
             _LOGGER.error(f"Failed to turn on light {self._name}")
 
     async def async_turn_off(self, **kwargs):
         """Turn off the light with error handling."""
+        _LOGGER.info(f"Turning off {self._name}")
         params = {"lighting": False}
         success = await self._ws.send_command(self._unique_id, "updateParams", params)
         if success:
             self._is_on = False
+            _LOGGER.info(f"Successfully turned off {self._name}")
             self.async_write_ha_state()
         else:
             _LOGGER.error(f"Failed to turn off light {self._name}")
