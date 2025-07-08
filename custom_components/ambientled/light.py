@@ -16,19 +16,41 @@ from homeassistant.core import callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from .const import DOMAIN, CONF_URL, DEFAULT_URL
 
+# Global WebSocket connection to ensure only one connection per integration
+_websocket_instance = None
+
 _LOGGER = logging.getLogger(__name__)
 
 async def async_setup_entry(hass, entry, async_add_entities):
     """
     Set up AmbientLed lights from a config entry.
     """
+    global _websocket_instance
+    
     token = entry.data[CONF_TOKEN]
     url = entry.data.get(CONF_URL, DEFAULT_URL)
-    ws = AmbientLedWebsocket(token, url, hass)
+    
+    # Use existing WebSocket connection if available
+    if _websocket_instance is None:
+        _websocket_instance = AmbientLedWebsocket(token, url, hass)
+        try:
+            await _websocket_instance.connect()
+        except Exception as e:
+            _LOGGER.error(f"Failed to connect to AmbientLed WebSocket: {e}")
+            return
+    else:
+        # Update token and URL if they changed
+        if _websocket_instance.token != token or _websocket_instance.url != url:
+            await _websocket_instance.disconnect()
+            _websocket_instance = AmbientLedWebsocket(token, url, hass)
+            try:
+                await _websocket_instance.connect()
+            except Exception as e:
+                _LOGGER.error(f"Failed to connect to AmbientLed WebSocket: {e}")
+                return
     
     try:
-        await ws.connect()
-        devices = await ws.get_devices()
+        devices = await _websocket_instance.get_devices()
         entities = []
         
         if not devices:
@@ -39,7 +61,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
             # Check if device is a dictionary and has required fields
             if isinstance(dev, dict) and dev.get("_id") and dev.get("name"):
                 try:
-                    entities.append(AmbientLedLight(dev, ws))
+                    entities.append(AmbientLedLight(dev, _websocket_instance))
                     _LOGGER.info(f"Created entity for device: {dev.get('name')}")
                 except Exception as e:
                     _LOGGER.error(f"Failed to create entity for device {dev.get('name', 'unknown')}: {e}")
@@ -57,6 +79,16 @@ async def async_setup_entry(hass, entry, async_add_entities):
     except Exception as e:
         _LOGGER.error(f"Failed to setup AmbientLed integration: {e}")
         # Don't raise the exception to prevent integration from failing completely
+
+async def async_unload_entry(hass, entry):
+    """Unload the AmbientLed integration."""
+    global _websocket_instance
+    
+    if _websocket_instance:
+        await _websocket_instance.disconnect()
+        _websocket_instance = None
+    
+    return True
 
 class AmbientLedWebsocket:
     def __init__(self, token, url, hass):
@@ -78,8 +110,10 @@ class AmbientLedWebsocket:
             
             _LOGGER.info(f"Attempting to connect to WebSocket at: {self.url}")
             
-            # Create SSL context without blocking calls
-            ssl_context = ssl.create_default_context()
+            # Create SSL context without loading default certs to avoid blocking calls
+            ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
             
             self.ws = await asyncio.wait_for(
                 websockets.connect(
@@ -122,7 +156,9 @@ class AmbientLedWebsocket:
         try:
             while self.connected and self.ws:
                 try:
-                    message = await asyncio.wait_for(self.ws.recv(), timeout=60)
+                    # Use lock to prevent concurrent recv calls
+                    async with self._recv_lock:
+                        message = await asyncio.wait_for(self.ws.recv(), timeout=60)
                     await self._handle_message(message)
                 except asyncio.TimeoutError:
                     # Send ping to keep connection alive
@@ -350,6 +386,11 @@ class AmbientLedLight(LightEntity):
     @property
     def supported_color_modes(self):
         return self._supported_color_modes
+
+    @property
+    def color_mode(self):
+        """Return the color mode of the light."""
+        return ColorMode.HS
 
     @property
     def effect_list(self):
