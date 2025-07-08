@@ -9,6 +9,7 @@ from homeassistant.components.light import (
     ATTR_BRIGHTNESS,
     ATTR_HS_COLOR,
     ColorMode,
+    ATTR_EFFECT,
 )
 from homeassistant.const import CONF_TOKEN
 from homeassistant.core import callback
@@ -208,8 +209,9 @@ class AmbientLedWebsocket:
         
         try:
             # Send message in the correct format expected by the backend
+            # Use getDevicesIntegration for Home Assistant to get only light devices
             message = {
-                "method": "getDevices",
+                "method": "getDevicesIntegration",
                 "id": "1",
                 "data": {}
             }
@@ -297,8 +299,12 @@ class AmbientLedLight(LightEntity):
         self._is_on = device.get("data", {}).get("lighting", False)
         self._brightness = device.get("data", {}).get("brightness", 255)
         self._hs_color = (0, 0)
+        self._effect = device.get("data", {}).get("effect", "Fade")
         self._supported_color_modes = {ColorMode.HS}
         self._available = True
+        
+        # Available effects for this device
+        self._effects = device.get("data", {}).get("effects", ["Fade", "Fire", "Rain", "Rainbow", "Rainbow vertical", "Firework", "Romantic", "Disco"])
         
         # Add listener for device updates
         self._ws.add_listener(self._handle_device_update)
@@ -309,6 +315,9 @@ class AmbientLedLight(LightEntity):
             data = device_data.get("data", {})
             self._is_on = data.get("lighting", self._is_on)
             self._brightness = data.get("brightness", self._brightness)
+            # Update effect if available
+            if "effect" in data:
+                self._effect = data.get("effect", self._effect)
             # Update color if available
             color = data.get("color", "#000000")
             if color and color != "#000000":
@@ -343,6 +352,16 @@ class AmbientLedLight(LightEntity):
         return self._supported_color_modes
 
     @property
+    def effect_list(self):
+        """Return the list of supported effects."""
+        return self._effects
+
+    @property
+    def effect(self):
+        """Return the current effect."""
+        return self._effect
+
+    @property
     def available(self):
         return self._available and self._ws.connected
 
@@ -358,22 +377,27 @@ class AmbientLedLight(LightEntity):
                 int(rgb[0] * 255), int(rgb[1] * 255), int(rgb[2] * 255)
             )
             params["color"] = hex_color
+        if ATTR_EFFECT in kwargs:
+            params["effect"] = kwargs[ATTR_EFFECT]
         params["lighting"] = True
         
-        success = await self._ws.send_command(self._unique_id, "setDevice", {"app": params})
+        # Use updateParams method for Home Assistant integration
+        success = await self._ws.send_command(self._unique_id, "updateParams", params)
         if success:
             self._is_on = True
             if "brightness" in params:
                 self._brightness = params["brightness"]
             if "color" in params:
                 self._hs_color = kwargs.get(ATTR_HS_COLOR, self._hs_color)
+            if "effect" in params:
+                self._effect = params["effect"]
             self.async_write_ha_state()
         else:
             _LOGGER.error(f"Failed to turn on light {self._name}")
 
     async def async_turn_off(self, **kwargs):
         """Turn off the light with error handling."""
-        success = await self._ws.send_command(self._unique_id, "setDevice", {"app": {"lighting": False}})
+        success = await self._ws.send_command(self._unique_id, "updateParams", {"lighting": False})
         if success:
             self._is_on = False
             self.async_write_ha_state()
