@@ -4,7 +4,6 @@ import json
 import colorsys
 import websockets
 import voluptuous as vol
-import certifi
 from homeassistant.components.light import (
     LightEntity,
     ATTR_BRIGHTNESS,
@@ -69,17 +68,17 @@ class AmbientLedWebsocket:
         self.max_reconnect_attempts = 5
         self.reconnect_delay = 5
         self._listeners = []
+        self._recv_lock = asyncio.Lock()
 
     async def connect(self):
         """Connect to WebSocket with error handling and reconnection."""
         try:
             import ssl
-            import certifi
             
             _LOGGER.info(f"Attempting to connect to WebSocket at: {self.url}")
             
-            # Create SSL context in async way to avoid blocking calls
-            ssl_context = ssl.create_default_context(cafile=certifi.where())
+            # Create SSL context without blocking calls
+            ssl_context = ssl.create_default_context()
             
             self.ws = await asyncio.wait_for(
                 websockets.connect(
@@ -208,9 +207,19 @@ class AmbientLedWebsocket:
             return []
         
         try:
-            await self.ws.send('{"method": "getDevices", "id": "1"}')
-            resp = await asyncio.wait_for(self.ws.recv(), timeout=10)
+            # Send message in the correct format expected by the backend
+            message = {
+                "method": "getDevices",
+                "id": "1",
+                "data": {}
+            }
+            await self.ws.send(json.dumps(message))
             
+            # Use lock to prevent concurrent recv calls
+            async with self._recv_lock:
+                resp = await asyncio.wait_for(self.ws.recv(), timeout=10)
+            
+            _LOGGER.info(f"Response: {resp}")
             # Check if response is empty
             if not resp or resp.strip() == "":
                 _LOGGER.error("Empty response from WebSocket")

@@ -105,7 +105,8 @@ class AmbientLedOptionsFlow(config_entries.OptionsFlow):
     
     def __init__(self, config_entry):
         """Initialize options flow."""
-        self.config_entry = config_entry
+        # Don't set config_entry directly to avoid deprecation warning
+        self._config_entry = config_entry
 
     async def async_step_init(self, user_input=None):
         """Manage the options."""
@@ -117,7 +118,7 @@ class AmbientLedOptionsFlow(config_entries.OptionsFlow):
             data_schema=vol.Schema({
                 vol.Optional(
                     CONF_URL, 
-                    default=self.config_entry.data.get(CONF_URL, DEFAULT_URL),
+                    default=self._config_entry.data.get(CONF_URL, DEFAULT_URL),
                     description="WebSocket URL for your AmbientLed backend. Change this if you have a custom server."
                 ): str,
             })
