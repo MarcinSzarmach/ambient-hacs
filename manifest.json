@@ -1,0 +1,14 @@
+{
+  "domain": "ambientled",
+  "name": "AmbientLed",
+  "version": "0.1.0",
+  "documentation": "https://ambientled.pl",
+  "requirements": [
+    "websockets>=11.0"
+  ],
+  "dependencies": [],
+  "codeowners": [
+    "@marcinszarmach"
+  ],
+  "config_flow": true
+}
