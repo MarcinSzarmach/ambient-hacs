@@ -18,9 +18,7 @@ async def async_setup_entry(hass, entry):
     Set up AmbientLed from a config entry.
     """
     try:
-        hass.async_create_task(
-            hass.config_entries.async_forward_entry_setup(entry, "light")
-        )
+        await hass.config_entries.async_forward_entry_setups(entry, ["light"])
         return True
     except Exception as e:
         _LOGGER.error(f"Error setting up AmbientLed entry: {e}")

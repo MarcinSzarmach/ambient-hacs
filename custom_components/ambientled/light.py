@@ -6,10 +6,9 @@ import websockets
 import voluptuous as vol
 from homeassistant.components.light import (
     LightEntity,
-    SUPPORT_BRIGHTNESS,
-    SUPPORT_COLOR,
     ATTR_BRIGHTNESS,
     ATTR_HS_COLOR,
+    ColorMode,
 )
 from homeassistant.const import CONF_TOKEN
 from homeassistant.core import callback
@@ -29,7 +28,11 @@ async def async_setup_entry(hass, entry, async_add_entities):
     devices = await ws.get_devices()
     entities = []
     for dev in devices:
-        entities.append(AmbientLedLight(dev, ws))
+        # Check if device is a dictionary
+        if isinstance(dev, dict):
+            entities.append(AmbientLedLight(dev, ws))
+        else:
+            _LOGGER.warning(f"Device is not a dictionary: {dev}")
     async_add_entities(entities)
 
 class AmbientLedWebsocket:
@@ -47,10 +50,15 @@ class AmbientLedWebsocket:
     async def connect(self):
         """Connect to WebSocket with error handling and reconnection."""
         try:
+            import ssl
+            # Create SSL context in async way
+            ssl_context = ssl.create_default_context()
+            
             self.ws = await asyncio.wait_for(
                 websockets.connect(
                     self.url, 
-                    additional_headers={"Authorization": f"Bearer {self.token}"}
+                    additional_headers={"Authorization": f"Bearer {self.token}"},
+                    ssl=ssl_context
                 ),
                 timeout=10
             )
@@ -111,6 +119,10 @@ class AmbientLedWebsocket:
             # Check if message is empty or None
             if not message or message.strip() == "":
                 _LOGGER.warning("Received empty message from WebSocket")
+                return
+                
+            # Ignore ping/pong messages
+            if message.strip() == "pong":
                 return
                 
             data = json.loads(message)
@@ -223,7 +235,7 @@ class AmbientLedLight(LightEntity):
         self._is_on = device.get("data", {}).get("lighting", False)
         self._brightness = device.get("data", {}).get("brightness", 255)
         self._hs_color = (0, 0)
-        self._supported_features = SUPPORT_BRIGHTNESS | SUPPORT_COLOR
+        self._supported_color_modes = {ColorMode.HS}
         self._available = True
         
         # Add listener for device updates
@@ -265,8 +277,8 @@ class AmbientLedLight(LightEntity):
         return self._hs_color
 
     @property
-    def supported_features(self):
-        return self._supported_features
+    def supported_color_modes(self):
+        return self._supported_color_modes
 
     @property
     def available(self):
