@@ -40,10 +40,14 @@ async def async_setup_entry(hass, entry, async_add_entities):
             if isinstance(dev, dict) and dev.get("_id") and dev.get("name"):
                 try:
                     entities.append(AmbientLedLight(dev, ws))
+                    _LOGGER.info(f"Created entity for device: {dev.get('name')}")
                 except Exception as e:
                     _LOGGER.error(f"Failed to create entity for device {dev.get('name', 'unknown')}: {e}")
             else:
-                _LOGGER.warning(f"Invalid device data: {dev}")
+                # Log the actual type and content for debugging
+                dev_type = type(dev).__name__
+                dev_content = str(dev)[:100] if dev else "None"
+                _LOGGER.warning(f"Invalid device data - Type: {dev_type}, Content: {dev_content}")
         
         if entities:
             async_add_entities(entities)
@@ -71,6 +75,8 @@ class AmbientLedWebsocket:
         try:
             import ssl
             import certifi
+            
+            _LOGGER.info(f"Attempting to connect to WebSocket at: {self.url}")
             
             # Create SSL context in async way to avoid blocking calls
             ssl_context = ssl.create_default_context(cafile=certifi.where())
@@ -209,14 +215,31 @@ class AmbientLedWebsocket:
             if not resp or resp.strip() == "":
                 _LOGGER.error("Empty response from WebSocket")
                 return []
-                
-            data = json.loads(resp)
-            return data.get("data", [])
+            
+            # Try to parse JSON response
+            try:
+                data = json.loads(resp)
+            except json.JSONDecodeError as e:
+                _LOGGER.error(f"Invalid JSON response: {resp[:100]}... Error: {e}")
+                return []
+            
+            # Check if response indicates an error
+            if not data.get("status", True):
+                error_msg = data.get("data", {}).get("error", "Unknown error")
+                _LOGGER.error(f"Server returned error: {error_msg}")
+                return []
+            
+            # Check if data field exists and is a list
+            devices = data.get("data", [])
+            if not isinstance(devices, list):
+                _LOGGER.error(f"Expected devices list, got: {type(devices)}")
+                return []
+            
+            _LOGGER.info(f"Successfully retrieved {len(devices)} devices")
+            return devices
+            
         except asyncio.TimeoutError:
             _LOGGER.error("Timeout getting devices")
-            return []
-        except json.JSONDecodeError as e:
-            _LOGGER.error(f"Invalid JSON response: {resp[:100]}... Error: {e}")
             return []
         except Exception as e:
             _LOGGER.error(f"Error getting devices: {e}")
