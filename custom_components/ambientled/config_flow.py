@@ -41,9 +41,26 @@ class AmbientLedConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors["base"] = "unknown"
 
         data_schema = vol.Schema({
-            vol.Required(CONF_TOKEN): str,
-            vol.Optional(CONF_URL, default=DEFAULT_URL): str,
+            vol.Required(
+                CONF_TOKEN, 
+                description="Your AmbientLed user token. You can find this in your AmbientLed dashboard under account settings."
+            ): str,
+            vol.Optional(
+                CONF_URL, 
+                default=DEFAULT_URL,
+                description="WebSocket URL for your AmbientLed backend. Leave as default unless you have a custom server."
+            ): str,
         })
+        
+        # Add helpful error messages
+        if errors:
+            if errors["base"] == "cannot_connect":
+                errors["base"] = "Unable to connect to AmbientLed backend. Please check your token and URL."
+            elif errors["base"] == "no_devices":
+                errors["base"] = "No devices found. Please make sure you have at least one AmbientLed device configured."
+            elif errors["base"] == "unknown":
+                errors["base"] = "An unexpected error occurred. Please check your configuration and try again."
+        
         return self.async_show_form(step_id="user", data_schema=data_schema, errors=errors)
 
     @staticmethod
@@ -67,6 +84,10 @@ class AmbientLedOptionsFlow(config_entries.OptionsFlow):
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema({
-                vol.Optional(CONF_URL, default=self.config_entry.data.get(CONF_URL, DEFAULT_URL)): str,
+                vol.Optional(
+                    CONF_URL, 
+                    default=self.config_entry.data.get(CONF_URL, DEFAULT_URL),
+                    description="WebSocket URL for your AmbientLed backend. Change this if you have a custom server."
+                ): str,
             })
         ) 
