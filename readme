@@ -31,7 +31,7 @@ AmbientLed is a custom integration for Home Assistant that allows you to control
 3. **Configure**
 
    - In Home Assistant, go to Settings → Devices & Services → Add Integration.
-   - Search for "AmbientLed", enter your token (and optionally the backend URL), and finish the setup.
+   - Search for “AmbientLed”, enter your token (and optionally the backend URL), and finish the setup.
 
 4. **Enjoy!**  
    Your AmbientLed devices will appear as lights in Home Assistant. You can control them from the dashboard, automations, or voice assistants.
