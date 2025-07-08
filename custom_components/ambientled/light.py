@@ -2,6 +2,7 @@ import logging
 import asyncio
 import json
 import colorsys
+import websockets
 import voluptuous as vol
 from homeassistant.components.light import (
     LightEntity,
@@ -46,7 +47,6 @@ class AmbientLedWebsocket:
     async def connect(self):
         """Connect to WebSocket with error handling and reconnection."""
         try:
-            import websockets
             self.ws = await asyncio.wait_for(
                 websockets.connect(
                     self.url, 
@@ -64,15 +64,29 @@ class AmbientLedWebsocket:
             
         except asyncio.TimeoutError:
             _LOGGER.error("Connection timeout to AmbientLed WebSocket")
-            await self._schedule_reconnect()
+            self.connected = False
+            raise Exception("Connection timeout - server not responding")
+        except websockets.exceptions.InvalidURI:
+            _LOGGER.error("Invalid WebSocket URL")
+            self.connected = False
+            raise Exception("Invalid WebSocket URL - please check the URL format")
+        except websockets.exceptions.InvalidStatusCode as e:
+            if e.status_code == 401:
+                _LOGGER.error("Authentication failed - invalid token")
+                self.connected = False
+                raise Exception("Authentication failed - please check your token")
+            else:
+                _LOGGER.error(f"Server returned error {e.status_code}")
+                self.connected = False
+                raise Exception(f"Server error {e.status_code} - please check your configuration")
         except Exception as e:
             _LOGGER.error(f"Failed to connect to AmbientLed WebSocket: {e}")
-            await self._schedule_reconnect()
+            self.connected = False
+            raise Exception(f"Connection failed: {str(e)}")
 
     async def _listen(self):
         """Listen for incoming WebSocket messages."""
         try:
-            import websockets
             while self.connected and self.ws:
                 try:
                     message = await asyncio.wait_for(self.ws.recv(), timeout=60)

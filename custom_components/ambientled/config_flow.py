@@ -38,7 +38,17 @@ class AmbientLedConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         
             except Exception as e:
                 _LOGGER.error(f"Config flow error: {e}")
-                errors["base"] = "unknown"
+                error_message = str(e)
+                if "Authentication failed" in error_message:
+                    errors["base"] = "invalid_token"
+                elif "Connection timeout" in error_message:
+                    errors["base"] = "timeout"
+                elif "Invalid WebSocket URL" in error_message:
+                    errors["base"] = "invalid_url"
+                elif "Server error" in error_message:
+                    errors["base"] = "server_error"
+                else:
+                    errors["base"] = "unknown"
 
         data_schema = vol.Schema({
             vol.Required(
@@ -56,8 +66,16 @@ class AmbientLedConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if errors:
             if errors["base"] == "cannot_connect":
                 errors["base"] = "Unable to connect to AmbientLed backend. Please check your token and URL."
+            elif errors["base"] == "invalid_token":
+                errors["base"] = "Invalid token. Please check your AmbientLed user token in the dashboard settings."
+            elif errors["base"] == "timeout":
+                errors["base"] = "Connection timeout. Please check if your AmbientLed server is running and accessible."
+            elif errors["base"] == "invalid_url":
+                errors["base"] = "Invalid WebSocket URL. Please check the URL format (should start with ws:// or wss://)."
+            elif errors["base"] == "server_error":
+                errors["base"] = "Server error. Please check if your AmbientLed backend is running properly."
             elif errors["base"] == "no_devices":
-                errors["base"] = "No devices found. Please make sure you have at least one AmbientLed device configured."
+                errors["base"] = "No devices found. Please make sure you have at least one AmbientLed device configured and connected."
             elif errors["base"] == "unknown":
                 errors["base"] = "An unexpected error occurred. Please check your configuration and try again."
         
