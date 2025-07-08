@@ -355,7 +355,21 @@ class AmbientLedWebsocket:
             self._message_id += 1
             message_id = str(self._message_id)
             
-            msg = {"method": method, "id": message_id, "data": params}
+            # Format message based on method
+            if method == "updateParams":
+                # For updateParams, the backend expects: { id: device_id, data: params }
+                msg = {
+                    "method": method, 
+                    "id": message_id, 
+                    "data": {
+                        "id": device_id,
+                        "data": params
+                    }
+                }
+            else:
+                # For other methods, use the standard format
+                msg = {"method": method, "id": message_id, "data": params}
+            
             _LOGGER.info(f"Sending command: {json.dumps(msg)}")
             await asyncio.wait_for(self.ws.send(json.dumps(msg)), timeout=5)
             return True
