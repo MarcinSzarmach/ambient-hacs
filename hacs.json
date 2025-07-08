@@ -1,0 +1,6 @@
+{
+  "name": "AmbientLed",
+  "domains": "ambientled",
+  "iot_class": "cloud push",
+  "homeassistant": "2021.10.0"
+}
