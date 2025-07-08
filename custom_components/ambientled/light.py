@@ -427,7 +427,9 @@ class AmbientLedLight(LightEntity):
             self._hs_color = (0, 0)
         
         self._supported_color_modes = {ColorMode.HS}
-        self._available = True
+        
+        # Set availability based on device online status
+        self._available = device.get("online", False)
         
         # Available effects for this device - handle both string and array formats
         effects = device_data.get("effects", [])
@@ -445,6 +447,7 @@ class AmbientLedLight(LightEntity):
         
         _LOGGER.info(f"Created light entity: {self._name} (ID: {self._unique_id})")
         _LOGGER.info(f"Initial state - On: {self._is_on}, Brightness: {self._brightness} (from device: {device_brightness}), Effect: {self._effect}")
+        _LOGGER.info(f"Device online: {self._available}")
         _LOGGER.info(f"Available effects: {self._effects}")
         
         # Add listener for device updates
@@ -454,6 +457,14 @@ class AmbientLedLight(LightEntity):
         """Handle device state updates from WebSocket."""
         if device_data.get("_id") == self._unique_id:
             _LOGGER.info(f"Received device update for {self._name}: {json.dumps(device_data, indent=2)}")
+            
+            # Update device availability based on online status
+            old_available = self._available
+            self._available = device_data.get("online", False)
+            if old_available != self._available:
+                _LOGGER.info(f"Device availability changed for {self._name}: {old_available} -> {self._available}")
+                # Force state update when availability changes
+                self.async_write_ha_state()
             
             data = device_data.get("data", {})
             old_state = {
@@ -561,6 +572,7 @@ class AmbientLedLight(LightEntity):
 
     @property
     def available(self):
+        """Return if the light is available."""
         return self._available and self._ws.connected
 
     @property
