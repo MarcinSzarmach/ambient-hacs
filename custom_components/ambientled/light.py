@@ -550,7 +550,7 @@ class AmbientLedLight(LightEntity):
     @property
     def effect_list(self):
         """Return the list of supported effects."""
-        _LOGGER.debug(f"Effect list for {self._name}: {self._effects}")
+        _LOGGER.info(f"Effect list for {self._name}: {self._effects}")
         return self._effects
 
     @property
@@ -574,8 +574,11 @@ class AmbientLedLight(LightEntity):
             params["brightness"] = device_brightness
             _LOGGER.info(f"Converting brightness: HA {ha_brightness} -> Device {device_brightness}")
         if ATTR_HS_COLOR in kwargs:
-            # Convert HS to hex
-            rgb = colorsys.hsv_to_rgb(kwargs[ATTR_HS_COLOR][0], kwargs[ATTR_HS_COLOR][1], 1)
+            # Convert HS to hex - fix the formatting
+            h, s = kwargs[ATTR_HS_COLOR]
+            # Convert HSV to RGB (h is in degrees 0-360, s and v are 0-1)
+            rgb = colorsys.hsv_to_rgb(h/360, s/100, 1)
+            # Convert RGB to hex
             hex_color = "#{:02x}{:02x}{:02x}".format(
                 int(rgb[0] * 255), int(rgb[1] * 255), int(rgb[2] * 255)
             )
