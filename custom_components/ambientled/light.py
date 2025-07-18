@@ -10,7 +10,7 @@ from homeassistant.components.light import (
     ATTR_HS_COLOR,
     ColorMode,
     ATTR_EFFECT,
-    SUPPORT_EFFECT,
+    LightEntityFeature,
 )
 from homeassistant.const import CONF_TOKEN
 from homeassistant.core import callback
@@ -651,7 +651,7 @@ class AmbientLedLight(LightEntity):
     @property
     def supported_features(self):
         """Return the supported features of the light."""
-        return SUPPORT_EFFECT
+        return LightEntityFeature.EFFECT
 
     async def async_turn_on(self, **kwargs):
         """Turn on the light with error handling."""
