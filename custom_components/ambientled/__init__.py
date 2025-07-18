@@ -34,6 +34,11 @@ async def async_unload_entry(hass, entry):
         
         if unload_ok:
             _LOGGER.info("AmbientLed integration unloaded successfully")
+            
+            # Cleanup WebSocket connections if no more entries
+            from .light import get_websocket_manager
+            manager = get_websocket_manager()
+            await manager.cleanup_all()
         
         return unload_ok
     except Exception as e:

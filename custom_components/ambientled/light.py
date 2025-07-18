@@ -17,41 +17,83 @@ from homeassistant.core import callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from .const import DOMAIN, CONF_URL, DEFAULT_URL
 
-# Global WebSocket connection to ensure only one connection per integration
-_websocket_instance = None
+# Global WebSocket connection manager
+_websocket_manager = None
 
 _LOGGER = logging.getLogger(__name__)
+
+class WebSocketManager:
+    """Manages WebSocket connections for AmbientLed integration."""
+    
+    def __init__(self):
+        self._connections = {}
+        self._lock = asyncio.Lock()
+    
+    async def get_connection(self, token, url, hass):
+        """Get or create WebSocket connection for given token/url."""
+        connection_key = f"{token}_{url}"
+        
+        async with self._lock:
+            if connection_key in self._connections:
+                connection = self._connections[connection_key]
+                if connection.connected:
+                    _LOGGER.info(f"Reusing existing WebSocket connection for {connection_key}")
+                    return connection
+                else:
+                    _LOGGER.info(f"Removing stale connection for {connection_key}")
+                    await connection.disconnect()
+                    del self._connections[connection_key]
+            
+            # Create new connection
+            _LOGGER.info(f"Creating new WebSocket connection for {connection_key}")
+            connection = AmbientLedWebsocket(token, url, hass)
+            self._connections[connection_key] = connection
+            await connection.connect()
+            return connection
+    
+    async def remove_connection(self, token, url):
+        """Remove WebSocket connection."""
+        connection_key = f"{token}_{url}"
+        
+        async with self._lock:
+            if connection_key in self._connections:
+                connection = self._connections[connection_key]
+                await connection.disconnect()
+                del self._connections[connection_key]
+                _LOGGER.info(f"Removed WebSocket connection for {connection_key}")
+    
+    async def cleanup_all(self):
+        """Cleanup all connections."""
+        async with self._lock:
+            for connection_key, connection in list(self._connections.items()):
+                await connection.disconnect()
+                _LOGGER.info(f"Cleaned up connection: {connection_key}")
+            self._connections.clear()
+
+def get_websocket_manager():
+    """Get global WebSocket manager."""
+    global _websocket_manager
+    if _websocket_manager is None:
+        _websocket_manager = WebSocketManager()
+    return _websocket_manager
 
 async def async_setup_entry(hass, entry, async_add_entities):
     """
     Set up AmbientLed lights from a config entry.
     """
-    global _websocket_instance
-    
     token = entry.data[CONF_TOKEN]
     url = entry.data.get(CONF_URL, DEFAULT_URL)
     
-    # Use existing WebSocket connection if available
-    if _websocket_instance is None:
-        _websocket_instance = AmbientLedWebsocket(token, url, hass)
-        try:
-            await _websocket_instance.connect()
-        except Exception as e:
-            _LOGGER.error(f"Failed to connect to AmbientLed WebSocket: {e}")
-            return
-    else:
-        # Update token and URL if they changed
-        if _websocket_instance.token != token or _websocket_instance.url != url:
-            await _websocket_instance.disconnect()
-            _websocket_instance = AmbientLedWebsocket(token, url, hass)
-            try:
-                await _websocket_instance.connect()
-            except Exception as e:
-                _LOGGER.error(f"Failed to connect to AmbientLed WebSocket: {e}")
-                return
+    # Get WebSocket connection through manager
+    manager = get_websocket_manager()
+    try:
+        ws_connection = await manager.get_connection(token, url, hass)
+    except Exception as e:
+        _LOGGER.error(f"Failed to connect to AmbientLed WebSocket: {e}")
+        return
     
     try:
-        devices = await _websocket_instance.get_devices()
+        devices = await ws_connection.get_devices()
         entities = []
         
         if not devices:
@@ -62,7 +104,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
             # Check if device is a dictionary and has required fields
             if isinstance(dev, dict) and dev.get("_id") and dev.get("name"):
                 try:
-                    entities.append(AmbientLedLight(dev, _websocket_instance))
+                    entities.append(AmbientLedLight(dev, ws_connection))
                     _LOGGER.info(f"Created entity for device: {dev.get('name')}")
                 except Exception as e:
                     _LOGGER.error(f"Failed to create entity for device {dev.get('name', 'unknown')}: {e}")
@@ -83,11 +125,12 @@ async def async_setup_entry(hass, entry, async_add_entities):
 
 async def async_unload_entry(hass, entry):
     """Unload the AmbientLed integration."""
-    global _websocket_instance
+    token = entry.data[CONF_TOKEN]
+    url = entry.data.get(CONF_URL, DEFAULT_URL)
     
-    if _websocket_instance:
-        await _websocket_instance.disconnect()
-        _websocket_instance = None
+    # Remove connection through manager
+    manager = get_websocket_manager()
+    await manager.remove_connection(token, url)
     
     return True
 
@@ -105,9 +148,14 @@ class AmbientLedWebsocket:
         self._recv_lock = asyncio.Lock()
         self._pending_responses = {}
         self._message_id = 0
+        self._listen_task = None
+        self._shutdown = False
 
     async def connect(self):
         """Connect to WebSocket with error handling and reconnection."""
+        if self._shutdown:
+            raise Exception("WebSocket is shutting down")
+            
         try:
             import ssl
             
@@ -130,7 +178,9 @@ class AmbientLedWebsocket:
             _LOGGER.info("Connected to AmbientLed WebSocket")
             
             # Start listening for messages
-            asyncio.create_task(self._listen())
+            if self._listen_task:
+                self._listen_task.cancel()
+            self._listen_task = asyncio.create_task(self._listen())
             
         except asyncio.TimeoutError:
             _LOGGER.error("Connection timeout to AmbientLed WebSocket")
@@ -156,8 +206,9 @@ class AmbientLedWebsocket:
 
     async def _listen(self):
         """Listen for incoming WebSocket messages."""
+        _LOGGER.info("Starting WebSocket listener")
         try:
-            while self.connected and self.ws:
+            while self.connected and self.ws and not self._shutdown:
                 try:
                     # Use lock to prevent concurrent recv calls
                     async with self._recv_lock:
@@ -171,15 +222,15 @@ class AmbientLedWebsocket:
                     
                 except asyncio.TimeoutError:
                     # Send ping to keep connection alive
-                    if self.ws and self.connected:
+                    if self.ws and self.connected and not self._shutdown:
                         try:
                             await self.ws.ping()
                             _LOGGER.debug("Sent ping to keep connection alive")
                         except Exception as e:
                             _LOGGER.warning(f"Failed to send ping: {e}")
                             break
-                except websockets.exceptions.ConnectionClosed:
-                    _LOGGER.warning("WebSocket connection closed")
+                except websockets.exceptions.ConnectionClosed as e:
+                    _LOGGER.warning(f"WebSocket connection closed: {e}")
                     break
                 except Exception as e:
                     _LOGGER.error(f"Error receiving message: {e}")
@@ -187,8 +238,10 @@ class AmbientLedWebsocket:
         except Exception as e:
             _LOGGER.error(f"WebSocket listen error: {e}")
         finally:
+            _LOGGER.info("WebSocket listener stopped")
             self.connected = False
-            await self._schedule_reconnect()
+            if not self._shutdown:
+                await self._schedule_reconnect()
 
     async def _handle_message(self, message):
         """Handle incoming WebSocket message."""
@@ -271,6 +324,9 @@ class AmbientLedWebsocket:
 
     async def _schedule_reconnect(self):
         """Schedule reconnection attempt."""
+        if self._shutdown:
+            return
+            
         if self.reconnect_task:
             self.reconnect_task.cancel()
         self.reconnect_task = asyncio.create_task(self._reconnect())
@@ -278,6 +334,9 @@ class AmbientLedWebsocket:
     async def _reconnect(self):
         """Attempt to reconnect to WebSocket."""
         for attempt in range(1, self.max_reconnect_attempts + 1):
+            if self._shutdown:
+                return
+                
             try:
                 _LOGGER.info(f"Attempting to reconnect (attempt {attempt}/{self.max_reconnect_attempts})")
                 await self.connect()
@@ -285,7 +344,7 @@ class AmbientLedWebsocket:
                 return
             except Exception as e:
                 _LOGGER.error(f"Reconnection attempt {attempt} failed: {e}")
-                if attempt < self.max_reconnect_attempts:
+                if attempt < self.max_reconnect_attempts and not self._shutdown:
                     await asyncio.sleep(self.reconnect_delay)
         
         _LOGGER.error("Failed to reconnect after all attempts")
@@ -383,7 +442,8 @@ class AmbientLedWebsocket:
 
     def add_listener(self, listener):
         """Add message listener."""
-        self._listeners.append(listener)
+        if listener not in self._listeners:
+            self._listeners.append(listener)
 
     def remove_listener(self, listener):
         """Remove message listener."""
@@ -392,11 +452,24 @@ class AmbientLedWebsocket:
 
     async def disconnect(self):
         """Disconnect WebSocket."""
+        self._shutdown = True
         self.connected = False
+        
+        # Cancel tasks
         if self.reconnect_task:
             self.reconnect_task.cancel()
+        if self._listen_task:
+            self._listen_task.cancel()
+        
+        # Clear listeners
+        self._listeners.clear()
+        
+        # Close WebSocket
         if self.ws:
-            await self.ws.close()
+            try:
+                await self.ws.close()
+            except Exception as e:
+                _LOGGER.warning(f"Error closing WebSocket: {e}")
 
 class AmbientLedLight(LightEntity):
     def __init__(self, device, ws):
